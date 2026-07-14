@@ -50,11 +50,11 @@ CampusCompass/
 
 ## Status
 
-- [x] Supabase project provisioned + schema applied (incl. companies registry)
-- [x] ATS careers-page layer: CRED (Lever) + Postman (Greenhouse) verified live; run `scripts/verify_companies.py` to grow the registry
-- [x] Unstop public API verified live (~10k internships); SWE role added everywhere
-- [x] LinkedIn/Naukri assessed: both block server-side scraping — LinkedIn via Google Alerts RSS instead (guide Step 9), Naukri skipped (Unstop covers student internships better)
-- [ ] n8n workflows imported & credentialed
-- [ ] Telegram bot + channel created
-- [ ] Dashboard deployed (Streamlit Community Cloud)
-- [ ] First weekly digest sent
+- [x] Supabase provisioned + schema applied (postings, companies registry, 5 analytics views)
+- [x] All 4 scraper workflows live in n8n — 289 real postings collected on day one (193 Unstop, 96 Internshala)
+- [x] ATS registry: 10 companies with live boards verified (Meesho, PhonePe, Slice, Groww, Dream Sports, Hevo, Atlan, CRED, Postman, Pocket FM)
+- [x] LinkedIn via Google Alerts RSS wired (feeds populating); Naukri assessed & skipped — blocks server scraping, Unstop covers the segment
+- [x] Telegram bot + channel live, weekly digest generating from real data
+- [ ] Dashboard deployed to Streamlit Community Cloud
+- [ ] Seed/demo data wiped (after first week of real data)
+- [ ] 200+ digest subscribers

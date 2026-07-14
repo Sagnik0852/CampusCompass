@@ -1,0 +1,232 @@
+{
+  "name": "CampusCompass — ATS careers-page scan",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "at-01",
+      "name": "Every day 9am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1180, 0]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "companies",
+        "returnAll": false,
+        "limit": 500
+      },
+      "id": "at-02",
+      "name": "Fetch companies",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-960, 0],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Supabase CampusCompass"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// One API call per active company, provider-specific URL.\nconst urls = {\n  lever: s => `https://api.lever.co/v0/postings/${s}?mode=json`,\n  greenhouse: s => `https://boards-api.greenhouse.io/v1/boards/${s}/jobs?content=true`,\n  ashby: s => `https://api.ashbyhq.com/posting-api/job-board/${s}`\n};\nreturn $input.all()\n  .filter(i => i.json.active && urls[i.json.ats_provider])\n  .map(i => ({ json: {\n    name: i.json.name,\n    ats_provider: i.json.ats_provider,\n    ats_slug: i.json.ats_slug,\n    api_url: urls[i.json.ats_provider](i.json.ats_slug)\n  }}));"
+      },
+      "id": "at-03",
+      "name": "Build ATS API calls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-740, 0]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.api_url }}",
+        "options": {
+          "timeout": 30000,
+          "batching": {
+            "batch": {
+              "batchSize": 2,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "at-04",
+      "name": "Fetch ATS jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-520, 0],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize the three ATS response shapes into one, keep internships only.\nconst strip = h => String(h || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/<[^>]+>/g, ' ');\nconst cos = $('Build ATS API calls').all();\nconst out = [];\nconst seen = new Set();\n$input.all().forEach((item, i) => {\n  const co = cos[i] ? cos[i].json : {};\n  const d = item.json;\n  let jobs = [];\n  if (co.ats_provider === 'lever' && Array.isArray(d)) {\n    jobs = d.map(j => ({\n      url: j.hostedUrl,\n      title: j.text,\n      text: [j.text, j.categories && j.categories.location, j.categories && j.categories.commitment, j.descriptionPlain, (j.lists || []).map(l => l.text + ': ' + strip(l.content)).join(' ')].filter(Boolean).join('\\n')\n    }));\n  } else if (co.ats_provider === 'greenhouse' && d && Array.isArray(d.jobs)) {\n    jobs = d.jobs.map(j => ({\n      url: j.absolute_url,\n      title: j.title,\n      text: [j.title, j.location && j.location.name, strip(j.content)].filter(Boolean).join('\\n')\n    }));\n  } else if (co.ats_provider === 'ashby' && d && Array.isArray(d.jobs)) {\n    jobs = d.jobs.map(j => ({\n      url: j.jobUrl || j.applyUrl,\n      title: j.title,\n      text: [j.title, j.location, j.descriptionPlain || strip(j.descriptionHtml)].filter(Boolean).join('\\n')\n    }));\n  }\n  for (const j of jobs) {\n    if (!j.url || !j.title) continue;\n    // \\bintern\\b will NOT match \"international\" (word boundary), by design\n    if (!/\\bintern(ship|s)?\\b/i.test(j.title + ' ' + j.text.slice(0, 400))) continue;\n    if (seen.has(j.url)) continue;\n    seen.add(j.url);\n    out.push({ json: {\n      source: 'careers',\n      source_url: j.url,\n      company: co.name,\n      role_hint: 'other',\n      raw_text: j.text.replace(/\\s+/g, ' ').trim().slice(0, 6000)\n    }});\n  }\n});\nreturn out;"
+      },
+      "id": "at-05",
+      "name": "Normalize + filter internships",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-300, 0]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "postings",
+        "returnAll": false,
+        "limit": 1000
+      },
+      "id": "at-06",
+      "name": "Fetch known URLs",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-80, 0],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Supabase CampusCompass"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const known = new Set(\n  $('Fetch known URLs').all().map(i => i.json.source_url).filter(Boolean)\n);\nreturn $('Normalize + filter internships').all().filter(i => !known.has(i.json.source_url));"
+      },
+      "id": "at-07",
+      "name": "Filter new postings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [140, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Same extraction prompt as the Internshala workflow.\nconst SYSTEM = 'You extract structured data from internship job postings in India. Output ONLY a valid JSON object, no markdown fences, no commentary. If a field is not stated use null (arrays: [], booleans: false). Never guess stipend numbers. Schema: {\"title\":string,\"company\":string,\"role_category\":\"pm\"|\"growth\"|\"analyst\"|\"swe\"|\"other\",\"location\":string|null,\"city\":string|null,\"is_remote\":boolean,\"stipend_min_inr\":integer|null,\"stipend_max_inr\":integer|null,\"duration_months\":number|null,\"yoe_required\":number,\"ppo_offered\":boolean,\"posted_at\":\"YYYY-MM-DD\"|null,\"skills\":[string],\"perks\":[string]}. Rules: stipend is monthly INR (\"8-12k\" -> min 8000 max 12000; \"unpaid\" -> 0; convert lakhs/year to monthly). city: one normalized Indian city (Bangalore, Mumbai, Delhi NCR, Hyderabad, Pune, Chennai, Kolkata, or the proper city name), null if remote-only. yoe_required: years of prior experience asked, 0 if none mentioned. posted_at: resolve relative dates against the given today date. skills: lowercase canonical tags (excel, sql, power bi, google analytics, figma, a/b testing, seo, communication...), exclude generic filler like \"hardworking\". role_category: pm=product roles, growth=marketing/growth/community, analyst=data/business/product analyst, swe=software/web/app/backend/frontend/qa/devops/ml engineering, else other.';\nconst today = new Date().toISOString().slice(0, 10);\nreturn $input.all().map(item => ({ json: {\n  ...item.json,\n  anthropic_body: {\n    model: 'claude-haiku-4-5',\n    max_tokens: 1024,\n    temperature: 0,\n    system: SYSTEM,\n    messages: [{ role: 'user', content: `Today's date: ${today}\\n\\nPosting URL: ${item.json.source_url}\\nCompany (from registry): ${item.json.company}\\nPosting text:\\n---\\n${item.json.raw_text}\\n---` }]\n  }\n}}));"
+      },
+      "id": "at-08",
+      "name": "Build Claude request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [360, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.anthropic_body) }}",
+        "options": {
+          "timeout": 60000,
+          "batching": {
+            "batch": {
+              "batchSize": 3,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "at-09",
+      "name": "Claude: extract fields",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [580, 0],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Anthropic x-api-key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const reqs = $('Build Claude request').all();\nconst out = [];\n$input.all().forEach((item, i) => {\n  try {\n    const txt = (item.json.content && item.json.content[0] && item.json.content[0].text) || '';\n    const j = JSON.parse(txt.replace(/^```json\\s*/i, '').replace(/```\\s*$/, '').trim());\n    const meta = reqs[i] ? reqs[i].json : {};\n    out.push({ json: {\n      source: 'careers',\n      source_url: meta.source_url,\n      raw_text: meta.raw_text,\n      title: j.title,\n      company: j.company || meta.company,\n      role_category: ['pm','growth','analyst','swe','other'].includes(j.role_category) ? j.role_category : 'other',\n      location: j.location,\n      city: j.city,\n      is_remote: !!j.is_remote,\n      stipend_min_inr: Number.isFinite(j.stipend_min_inr) ? Math.round(j.stipend_min_inr) : null,\n      stipend_max_inr: Number.isFinite(j.stipend_max_inr) ? Math.round(j.stipend_max_inr) : null,\n      duration_months: j.duration_months,\n      yoe_required: Number.isFinite(j.yoe_required) ? j.yoe_required : 0,\n      ppo_offered: typeof j.ppo_offered === 'boolean' ? j.ppo_offered : null,\n      posted_at: /^\\d{4}-\\d{2}-\\d{2}$/.test(j.posted_at || '') ? j.posted_at : null,\n      skills: Array.isArray(j.skills) ? j.skills.map(s => String(s).toLowerCase().trim()) : [],\n      perks: Array.isArray(j.perks) ? j.perks : [],\n      extraction_model: 'claude-haiku-4-5',\n      extraction_json: j\n    }});\n  } catch (e) { /* skip unparseable; retried next run since URL was never inserted */ }\n});\nreturn out;"
+      },
+      "id": "at-10",
+      "name": "Parse extraction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 0]
+    },
+    {
+      "parameters": {
+        "tableId": "postings",
+        "dataToSend": "autoMapInputData"
+      },
+      "id": "at-11",
+      "name": "Insert posting",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1020, 0],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Supabase CampusCompass"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every day 9am": {
+      "main": [[{ "node": "Fetch companies", "type": "main", "index": 0 }]]
+    },
+    "Fetch companies": {
+      "main": [[{ "node": "Build ATS API calls", "type": "main", "index": 0 }]]
+    },
+    "Build ATS API calls": {
+      "main": [[{ "node": "Fetch ATS jobs", "type": "main", "index": 0 }]]
+    },
+    "Fetch ATS jobs": {
+      "main": [[{ "node": "Normalize + filter internships", "type": "main", "index": 0 }]]
+    },
+    "Normalize + filter internships": {
+      "main": [[{ "node": "Fetch known URLs", "type": "main", "index": 0 }]]
+    },
+    "Fetch known URLs": {
+      "main": [[{ "node": "Filter new postings", "type": "main", "index": 0 }]]
+    },
+    "Filter new postings": {
+      "main": [[{ "node": "Build Claude request", "type": "main", "index": 0 }]]
+    },
+    "Build Claude request": {
+      "main": [[{ "node": "Claude: extract fields", "type": "main", "index": 0 }]]
+    },
+    "Claude: extract fields": {
+      "main": [[{ "node": "Parse extraction", "type": "main", "index": 0 }]]
+    },
+    "Parse extraction": {
+      "main": [[{ "node": "Insert posting", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

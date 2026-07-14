@@ -1,0 +1,129 @@
+{
+  "name": "CampusCompass — Weekly Telegram digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 18 * * 0"
+            }
+          ]
+        }
+      },
+      "id": "wd-01",
+      "name": "Every Sunday 6pm",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-880, 0]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "postings",
+        "returnAll": false,
+        "limit": 1000
+      },
+      "id": "wd-02",
+      "name": "Fetch recent postings",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-660, 0],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Supabase CampusCompass"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compute this week's stats vs last week, then build the Claude digest request.\nconst DAY = 86400000;\nconst now = Date.now();\nconst rows = $input.all().map(i => i.json).filter(r => r && r.source_url);\nconst age = r => now - new Date(r.scraped_at).getTime();\nconst thisWeek = rows.filter(r => age(r) <= 7 * DAY);\nconst prevWeek = rows.filter(r => age(r) > 7 * DAY && age(r) <= 14 * DAY);\n\nfunction summarize(set) {\n  const byRole = {};\n  for (const r of set) {\n    const k = r.role_category || 'other';\n    byRole[k] = byRole[k] || { postings: 0, stipends: [], skills: {} };\n    byRole[k].postings++;\n    if (r.stipend_min_inr) byRole[k].stipends.push(r.stipend_min_inr);\n    for (const s of (r.skills || [])) byRole[k].skills[s] = (byRole[k].skills[s] || 0) + 1;\n  }\n  for (const k of Object.keys(byRole)) {\n    const st = byRole[k].stipends;\n    byRole[k].avg_stipend = st.length ? Math.round(st.reduce((a, b) => a + b, 0) / st.length) : null;\n    byRole[k].top_skills = Object.entries(byRole[k].skills).sort((a, b) => b[1] - a[1]).slice(0, 6);\n    delete byRole[k].stipends;\n    delete byRole[k].skills;\n  }\n  return byRole;\n}\n\n// Skill deltas across all roles\nfunction skillCounts(set) {\n  const c = {};\n  for (const r of set) for (const s of (r.skills || [])) c[s] = (c[s] || 0) + 1;\n  return c;\n}\nconst cur = skillCounts(thisWeek);\nconst prev = skillCounts(prevWeek);\nconst deltas = Object.keys({ ...cur, ...prev })\n  .map(s => ({ skill: s, this_week: cur[s] || 0, last_week: prev[s] || 0 }))\n  .filter(d => d.this_week + d.last_week >= 3)\n  .sort((a, b) => Math.abs(b.this_week - b.last_week) - Math.abs(a.this_week - a.last_week))\n  .slice(0, 10);\n\nconst topStipend = thisWeek\n  .filter(r => r.stipend_max_inr)\n  .sort((a, b) => b.stipend_max_inr - a.stipend_max_inr)\n  .slice(0, 5)\n  .map(r => ({ title: r.title, company: r.company, stipend_max_inr: r.stipend_max_inr, city: r.city || 'remote' }));\n\nconst SYSTEM = 'You write \"CampusCompass Weekly\" - a sharp, data-driven Telegram digest about the Indian internship market for PM / Growth / Analyst / Software roles, read by college students. Voice: smart friend who reads the data so they do not have to. No corporate fluff, no motivational filler. Format (Telegram HTML, <b></b> for bold only, NO markdown): 1) one-line hook stat, 2) \\ud83d\\udcca <b>By the numbers</b> - postings per role, avg stipend, deltas vs last week, 3) \\ud83d\\udcc8 <b>Skills moving</b> - 2-3 skills rising or falling with numbers, 4) \\ud83d\\udcb0 <b>Stipend watch</b> - best-paying postings this week, 5) \\ud83c\\udfaf <b>If you are prepping</b> - ONE concrete actionable takeaway. Under 250 words. Every claim must come from the data provided - never invent numbers. If data is thin, say so plainly and keep it short.';\n\nconst payload = {\n  this_week_by_role: summarize(thisWeek),\n  last_week_by_role: summarize(prevWeek),\n  skill_deltas: deltas,\n  top_stipends_this_week: topStipend,\n  total_postings_tracked: rows.length\n};\n\nreturn [{ json: { anthropic_body: {\n  model: 'claude-sonnet-5',\n  max_tokens: 3000,\n  thinking: { type: 'disabled' },\n  system: SYSTEM,\n  messages: [{ role: 'user', content: `This week's data (last 7 days), JSON:\\n${JSON.stringify(payload, null, 1)}\\n\\nWrite this week's digest. Today: ${new Date().toISOString().slice(0, 10)}.` }]\n} } }];"
+      },
+      "id": "wd-03",
+      "name": "Compute weekly stats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-440, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.anthropic_body) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "wd-04",
+      "name": "Claude: write digest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-220, 0],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Anthropic x-api-key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "@YOUR_CHANNEL_USERNAME",
+        "text": "={{ ($json.content || []).filter(c => c.type === 'text').map(c => c.text).join('\\n') }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "wd-05",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "CampusCompass Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every Sunday 6pm": {
+      "main": [[{ "node": "Fetch recent postings", "type": "main", "index": 0 }]]
+    },
+    "Fetch recent postings": {
+      "main": [[{ "node": "Compute weekly stats", "type": "main", "index": 0 }]]
+    },
+    "Compute weekly stats": {
+      "main": [[{ "node": "Claude: write digest", "type": "main", "index": 0 }]]
+    },
+    "Claude: write digest": {
+      "main": [[{ "node": "Send to Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

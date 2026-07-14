@@ -1,0 +1,244 @@
+{
+  "name": "CampusCompass — LinkedIn via Google Alerts RSS",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "15 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "li-01",
+      "name": "Every day 8:15am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1180, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// PASTE YOUR GOOGLE ALERTS RSS FEED URLS HERE (google.com/alerts → RSS icon).\n// One feed per role. Delete lines you don't have feeds for.\nconst feeds = [\n  'PASTE_YOUR_GOOGLE_ALERTS_RSS_FEED_URL',\n  'PASTE_YOUR_GOOGLE_ALERTS_RSS_FEED_URL',\n  'PASTE_YOUR_GOOGLE_ALERTS_RSS_FEED_URL',\n  'PASTE_YOUR_GOOGLE_ALERTS_RSS_FEED_URL',\n];\nreturn feeds.filter(u => u.startsWith('http')).map(u => ({ json: { feed_url: u } }));"
+      },
+      "id": "li-02",
+      "name": "Alert feeds",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-960, 0]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.feed_url }}",
+        "options": {}
+      },
+      "id": "li-03",
+      "name": "Read RSS feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.1,
+      "position": [-740, 0],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Google Alerts wraps links in a redirect — unwrap, keep only LinkedIn job\n// pages, normalize (strip tracking params), infer a role hint from the title.\nconst out = [];\nconst seen = new Set();\nfor (const item of $input.all()) {\n  let link = item.json.link || '';\n  // unwrap https://www.google.com/url?...&url=<real>&...\n  const m = link.match(/[?&]url=([^&]+)/);\n  if (m) link = decodeURIComponent(m[1]);\n  if (!/linkedin\\.com\\/jobs/i.test(link)) continue;\n  // normalize: strip query string / fragments (tracking junk breaks dedupe)\n  link = link.split('?')[0].split('#')[0].replace(/\\/$/, '');\n  if (seen.has(link)) continue;\n  seen.add(link);\n  const title = String(item.json.title || '').replace(/<[^>]+>/g, ' ').trim();\n  const snippet = String(item.json.contentSnippet || item.json.content || '').replace(/<[^>]+>/g, ' ').trim();\n  const t = (title + ' ' + snippet).toLowerCase();\n  let role_hint = 'other';\n  if (/product|\\bapm\\b/.test(t)) role_hint = 'pm';\n  else if (/market|growth|brand|community|content/.test(t)) role_hint = 'growth';\n  else if (/analyst|analytics|\\bbi\\b/.test(t)) role_hint = 'analyst';\n  else if (/software|developer|\\bsde\\b|engineer|full.?stack|backend|frontend/.test(t)) role_hint = 'swe';\n  out.push({ json: { source: 'linkedin', source_url: link, role_hint, rss_title: title, rss_snippet: snippet } });\n}\nreturn out;"
+      },
+      "id": "li-04",
+      "name": "Unwrap + filter links",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-520, 0]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "postings",
+        "returnAll": false,
+        "limit": 1000
+      },
+      "id": "li-05",
+      "name": "Fetch known URLs",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-300, 0],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Supabase CampusCompass"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const known = new Set(\n  $('Fetch known URLs').all().map(i => i.json.source_url).filter(Boolean)\n);\nreturn $('Unwrap + filter links').all().filter(i => !known.has(i.json.source_url));"
+      },
+      "id": "li-06",
+      "name": "Filter new postings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-80, 0]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.source_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "en-IN,en;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 30000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 3000
+            }
+          }
+        }
+      },
+      "id": "li-07",
+      "name": "Try fetch job page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [140, 0],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// LinkedIn sometimes serves guest pages, sometimes an auth wall.\n// Use the page text when we got it; otherwise fall back to the RSS\n// title + snippet (Claude still gets title/company/role from those).\nconst SYSTEM = 'You extract structured data from internship job postings in India. Output ONLY a valid JSON object, no markdown fences, no commentary. If a field is not stated use null (arrays: [], booleans: false). Never guess stipend numbers. Schema: {\"title\":string,\"company\":string,\"role_category\":\"pm\"|\"growth\"|\"analyst\"|\"swe\"|\"other\",\"location\":string|null,\"city\":string|null,\"is_remote\":boolean,\"stipend_min_inr\":integer|null,\"stipend_max_inr\":integer|null,\"duration_months\":number|null,\"yoe_required\":number,\"ppo_offered\":boolean,\"posted_at\":\"YYYY-MM-DD\"|null,\"skills\":[string],\"perks\":[string]}. Rules: stipend is monthly INR (\"8-12k\" -> min 8000 max 12000; \"unpaid\" -> 0; convert lakhs/year to monthly). city: one normalized Indian city (Bangalore, Mumbai, Delhi NCR, Hyderabad, Pune, Chennai, Kolkata, or the proper city name), null if remote-only. yoe_required: years of prior experience asked, 0 if none mentioned. posted_at: resolve relative dates against the given today date. skills: lowercase canonical tags (excel, sql, power bi, google analytics, figma, a/b testing, seo, python, react, communication...), exclude generic filler like \"hardworking\". role_category: pm=product roles, growth=marketing/growth/community, analyst=data/business/product analyst, swe=software/web/app/backend/frontend/qa/devops/ml engineering, else other. If the text is only a headline/snippet, extract what you can and leave the rest null.';\nconst srcs = $('Filter new postings').all();\nconst today = new Date().toISOString().slice(0, 10);\nconst out = [];\n$input.all().forEach((item, i) => {\n  const meta = srcs[i] ? srcs[i].json : {};\n  if (!meta.source_url) return;\n  const html = item.json.data || '';\n  let text = html\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n  // auth wall / empty page -> fall back to RSS metadata\n  const authWalled = text.length < 500 || /join linkedin|sign in to view|authwall/i.test(text.slice(0, 2000));\n  if (authWalled) {\n    text = `Headline: ${meta.rss_title}\\nSnippet: ${meta.rss_snippet}`;\n  } else {\n    text = text.slice(0, 6000);\n  }\n  out.push({ json: {\n    ...meta,\n    raw_text: text,\n    anthropic_body: {\n      model: 'claude-haiku-4-5',\n      max_tokens: 1024,\n      temperature: 0,\n      system: SYSTEM,\n      messages: [{ role: 'user', content: `Today's date: ${today}\\n\\nPosting URL: ${meta.source_url}\\nPosting text:\\n---\\n${text}\\n---` }]\n    }\n  }});\n});\nreturn out;"
+      },
+      "id": "li-08",
+      "name": "Build Claude request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [360, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.anthropic_body) }}",
+        "options": {
+          "timeout": 60000,
+          "batching": {
+            "batch": {
+              "batchSize": 3,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "li-09",
+      "name": "Claude: extract fields",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [580, 0],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Anthropic x-api-key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const reqs = $('Build Claude request').all();\nconst out = [];\n$input.all().forEach((item, i) => {\n  try {\n    const txt = (item.json.content && item.json.content[0] && item.json.content[0].text) || '';\n    const j = JSON.parse(txt.replace(/^```json\\s*/i, '').replace(/```\\s*$/, '').trim());\n    const meta = reqs[i] ? reqs[i].json : {};\n    out.push({ json: {\n      source: 'linkedin',\n      source_url: meta.source_url,\n      raw_text: meta.raw_text,\n      title: j.title || meta.rss_title,\n      company: j.company,\n      role_category: ['pm','growth','analyst','swe','other'].includes(j.role_category) ? j.role_category : (meta.role_hint || 'other'),\n      location: j.location,\n      city: j.city,\n      is_remote: !!j.is_remote,\n      stipend_min_inr: Number.isFinite(j.stipend_min_inr) ? Math.round(j.stipend_min_inr) : null,\n      stipend_max_inr: Number.isFinite(j.stipend_max_inr) ? Math.round(j.stipend_max_inr) : null,\n      duration_months: j.duration_months,\n      yoe_required: Number.isFinite(j.yoe_required) ? j.yoe_required : 0,\n      ppo_offered: typeof j.ppo_offered === 'boolean' ? j.ppo_offered : null,\n      posted_at: /^\\d{4}-\\d{2}-\\d{2}$/.test(j.posted_at || '') ? j.posted_at : null,\n      skills: Array.isArray(j.skills) ? j.skills.map(s => String(s).toLowerCase().trim()) : [],\n      perks: Array.isArray(j.perks) ? j.perks : [],\n      extraction_model: 'claude-haiku-4-5',\n      extraction_json: j\n    }});\n  } catch (e) { /* skip unparseable */ }\n});\nreturn out;"
+      },
+      "id": "li-10",
+      "name": "Parse extraction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 0]
+    },
+    {
+      "parameters": {
+        "tableId": "postings",
+        "dataToSend": "autoMapInputData"
+      },
+      "id": "li-11",
+      "name": "Insert posting",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1020, 0],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Supabase CampusCompass"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every day 8:15am": {
+      "main": [[{ "node": "Alert feeds", "type": "main", "index": 0 }]]
+    },
+    "Alert feeds": {
+      "main": [[{ "node": "Read RSS feed", "type": "main", "index": 0 }]]
+    },
+    "Read RSS feed": {
+      "main": [[{ "node": "Unwrap + filter links", "type": "main", "index": 0 }]]
+    },
+    "Unwrap + filter links": {
+      "main": [[{ "node": "Fetch known URLs", "type": "main", "index": 0 }]]
+    },
+    "Fetch known URLs": {
+      "main": [[{ "node": "Filter new postings", "type": "main", "index": 0 }]]
+    },
+    "Filter new postings": {
+      "main": [[{ "node": "Try fetch job page", "type": "main", "index": 0 }]]
+    },
+    "Try fetch job page": {
+      "main": [[{ "node": "Build Claude request", "type": "main", "index": 0 }]]
+    },
+    "Build Claude request": {
+      "main": [[{ "node": "Claude: extract fields", "type": "main", "index": 0 }]]
+    },
+    "Claude: extract fields": {
+      "main": [[{ "node": "Parse extraction", "type": "main", "index": 0 }]]
+    },
+    "Parse extraction": {
+      "main": [[{ "node": "Insert posting", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

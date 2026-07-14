@@ -72,4 +72,4 @@ Full instructions in [`BUILD_GUIDE.md`](BUILD_GUIDE.md). Short version: create a
 
 ---
 
-Built by [Sagnik Paul](https://github.com/Sagnik0852) · data collected for educational/research use, low request volumes, no paywalled content.
+Built by [Sagnik Paul](https://www.linkedin.com/in/sagnik-160704-paul/) · data collected for educational/research use, low request volumes, no paywalled content.
